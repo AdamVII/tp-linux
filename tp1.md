@@ -202,7 +202,7 @@ total 4
 
 ### Automatisez avec une tâche cron :
 ```
-sudo crontab -e
+[root@localhost ~]# sudo crontab -e
 
 j'ajoute dans l'éditeur:
 0 3 * * * /root/secure_backup.sh
@@ -327,10 +327,29 @@ rule family="ipv4" source address="192.168.1.0/24" service name="ssh" accept
 ## Étape 1 : Analyse avancée et suppression des traces suspectes
 ### Rechercher des utilisateurs récemment ajoutés :
 ```
-[root@localhost ~]# sudo cat /var/log/secure | grep user
-grep: (standard input): binary file matches
+[root@localhost secure_data]# sudo cat /etc/passwd
+root:x:0:0:root:/root:/bin/bash
+bin:x:1:1:bin:/bin:/sbin/nologin
+daemon:x:2:2:daemon:/sbin:/sbin/nologin
+adm:x:3:4:adm:/var/adm:/sbin/nologin
+lp:x:4:7:lp:/var/spool/lpd:/sbin/nologin
+sync:x:5:0:sync:/sbin:/bin/sync
+shutdown:x:6:0:shutdown:/sbin:/sbin/shutdown
+halt:x:7:0:halt:/sbin:/sbin/halt
+mail:x:8:12:mail:/var/spool/mail:/sbin/nologin
+operator:x:11:0:operator:/root:/sbin/nologin
+games:x:12:100:games:/usr/games:/sbin/nologin
+ftp:x:14:50:FTP User:/var/ftp:/sbin/nologin
+nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin
+tss:x:59:59:Account used for TPM access:/:/usr/sbin/nologin
+systemd-coredump:x:999:997:systemd Core Dumper:/:/sbin/nologin
+dbus:x:81:81:System message bus:/:/sbin/nologin
+sssd:x:998:996:User for sssd:/:/sbin/nologin
+chrony:x:997:995:chrony system user:/var/lib/chrony:/sbin/nologin
+sshd:x:74:74:Privilege-separated SSH:/usr/share/empty.sshd:/usr/sbin/nologin
+attacker:x:1000:1000::/home/attacker:/bin/bash
 
-Il n'y a pas de nouvel utilisateur ajouté.
+il y a un utilisateur attacker, surement malveillant
 ```
 
 ### Trouver les fichiers récemment modifiés dans des répertoires critiques :
@@ -418,43 +437,228 @@ sensitive1.txt  sensitive2.txt  testfile1.txt  testfile2.txt
 ## Étape 3 : Renforcement du pare-feu avec des règles dynamiques
 ### Bloquer les attaques par force brute :  
 ``` 
+[root@localhost secure_data]# sudo firewall-cmd --permanent --add-rich-rule="rule family='ipv4' service name='ssh' limit value='2/m' accept"
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --reload
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --list-all
+public (active)
+  target: default
+  icmp-block-inversion: no
+  interfaces: enp0s3 enp0s8
+  sources: 
+  services: http https ssh
+  ports: 2222/tcp
+  protocols: 
+  forward: yes
+  masquerade: no
+  forward-ports: 
+  source-ports: 
+  icmp-blocks: 
+  rich rules: 
+        rule family="ipv4" source address="192.168.1.0/24" service name="ssh" accept
+        rule family="ipv4" service name="ssh" accept limit value="2/m"
 
 ```
 
 ### Restreindre l’accès SSH à une plage IP spécifique :
 ``` 
+deja fait
+
+[root@localhost secure_data]# sudo firewall-cmd --list-all
+public (active)
+  target: default
+  icmp-block-inversion: no
+  interfaces: enp0s3 enp0s8
+  sources: 
+  services: http https ssh
+  ports: 2222/tcp
+  protocols: 
+  forward: yes
+  masquerade: no
+  forward-ports: 
+  source-ports: 
+  icmp-blocks: 
+  rich rules: 
+        rule family="ipv4" source address="192.168.1.0/24" service name="ssh" accept
+        rule family="ipv4" source address="192.168.0.0/16" service name="ssh" accept
+        rule family="ipv4" service name="ssh" accept limit value="2/m"
 
 ```
 
 ### Créer une zone sécurisée pour un service web :
 ``` 
+[root@localhost secure_data]# sudo firewall-cmd --permanent --new-zone=web_zone
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --permanent --zone=web_zone --add-service=http
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --permanent --zone=web_zone --add-service=https
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --permanent --zone=web_zone --set-target=DROP
+success
+
+
+[root@localhost secure_data]# sudo firewall-cmd --permanent --zone=web_zone --change-interface=enp0s8
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --reload
+success
+
+[root@localhost secure_data]# sudo firewall-cmd --zone=web_zone --list-all
+web_zone
+  target: DROP
+  icmp-block-inversion: no
+  interfaces: 
+  sources: 
+  services: http https
+  ports: 
+  protocols: 
+  forward: no
+  masquerade: no
+  forward-ports: 
+  source-ports: 
+  icmp-blocks: 
+  rich rules: 
 
 ```
 
 ## Étape 4 : Création d'un script de surveillance avancé
 ### Écrivez un script monitor.sh :
 ``` 
+[root@localhost secure_data]# sudo cat /usr/local/bin/monitor.sh
+#!/bin/bash
+
+# Chemin du fichier de log
+LOG_FILE="/var/log/monitor.log"
+
+# Fonction pour surveiller les connexions réseau
+monitor_connections() {
+    echo "=== [$(date)] Connexions actives ===" >> "$LOG_FILE"
+    ss -tuna | grep -v "State" >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+}
+
+# Fonction pour surveiller les modifications dans /etc
+monitor_file_changes() {
+    echo "=== [$(date)] Modifications dans /etc ===" >> "$LOG_FILE"
+    inotifywait -r -e modify,create,delete,move --format '%T %w%f %e' --timefmt '%Y-%m-%d %H:%M:%S' /etc >> "$LOG_FILE" &
+    INOTIFY_PID=$!
+}
+
+# Fonction principale
+main() {
+    echo "=== Surveillance démarrée à $(date) ===" >> "$LOG_FILE"
+    monitor_connections
+    monitor_file_changes
+
+    # Surveillance continue (Ctrl+C pour quitter)
+    while true; do
+        sleep 60  # Intervalle de mise à jour
+        monitor_connections
+    done
+}
+
+# Nettoyage en cas d'arrêt du script
+cleanup() {
+    echo "=== Surveillance arrêtée à $(date) ===" >> "$LOG_FILE"
+    kill "$INOTIFY_PID" 2>/dev/null
+    exit 0
+}
+
+# Gestion du signal Ctrl+C
+trap cleanup SIGINT SIGTERM
+
+# Exécution
+main
 
 ```
 
 ### Ajoutez une alerte par e-mail :
-``` 
+```
+[root@localhost secure_data]# sudo cat /usr/local/bin/monitor.sh 
+#!/bin/bash
 
+# Chemin du fichier de log
+LOG_FILE="/var/log/monitor.log"
+EMAIL="maitre_adam@jsp.com" 
+SUBJECT="ALERTE : Modification dans /etc"  
+
+# Fonction pour surveiller les connexions réseau
+monitor_connections() {
+[...]
+
+ while read event; do
+        echo "$event" >> "$LOG_FILE"
+
+        
+        echo "Un changement a été détecté : $event" | mailx -s "$SUBJECT" "$EMAIL"
+    done &
+    INOTIFY_PID=$!  
+}
+
+# Fonction principale
+main() {
+    echo "=== Surveillance démarrée à $(date) ===" >> "$LOG_FILE"
+    monitor_connections
+    monitor_file_changes 
+
+[...]
+
+# Nettoyage en cas d'arrêt du script
+cleanup() {
+    echo "=== Surveillance arrêtée à $(date) ===" >> "$LOG_FILE"
+    kill "$INOTIFY_PID" 2>/dev/null 
+    exit 0
+}
+
+# Gestion du signal Ctrl+C
+trap cleanup SIGINT SIGTERM
+
+# Exécution
+main
 ```
 
 ### Automatisez le script :
 ``` 
+[root@localhost ~]# sudo crontab -e
 
+j'ajoute dans l'éditeur:
+*/5 * * * * /usr/local/bin/monitor.sh >> /var/log/monitor_cron.log 2>&1
+
+je sauvegarde et je quitte.
 ```
 
 
 ## Étape 5 : Mise en place d’un IDS (Intrusion Detection System)
 ### Installer et configurer AIDE :
 ``` 
+[root@localhost ~]# aide --version
 
+[root@localhost ~]# sudo aide --init
+
+[root@localhost ~]# sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db
+
+[root@localhost ~]# sudo nano /etc/aide.conf
+
+j'y ajoute:
+
+/etc           p+i+n+u+g+s+b+m+c+md5+sha512
+/bin           p+i+n+u+g+s+b+m+c+md5+sha512
+/sbin          p+i+n+u+g+s+b+m+c+md5+sha512
+/usr/bin       p+i+n+u+g+s+b+m+c+md5+sha512
+/usr/sbin      p+i+n+u+g+s+b+m+c+md5+sha512
 ```
 
 ### Tester AIDE :
 ``` 
+[root@localhost ~]# sudo touch /etc/testfile
 
+[root@localhost ~]# sudo aide --check
+
+la modification est signalée dans la sortie.
 ```
